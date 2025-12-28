@@ -1,0 +1,101 @@
+name: Build Android AAB
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Build version'
+        required: false
+        default: '2.3.4'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: MeditationApp
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'MeditationApp/package-lock.json'
+          
+      - name: ☕ Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          
+      - name: 📦 Install dependencies
+        run: npm ci
+        
+      - name: 🔧 Setup Expo
+        uses: expo/expo-github-action@v8
+        with:
+          expo-version: latest
+          
+      - name: 🏗️ Run Expo prebuild
+        run: npx expo prebuild --platform android --clean
+        
+      - name: 🔑 Decode keystore
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/release.keystore
+          
+      - name: 📝 Create gradle.properties
+        run: |
+          cat >> android/gradle.properties << EOF
+          MYAPP_UPLOAD_STORE_FILE=release.keystore
+          MYAPP_UPLOAD_KEY_ALIAS=${{ secrets.KEY_ALIAS }}
+          MYAPP_UPLOAD_STORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}
+          MYAPP_UPLOAD_KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}
+          EOF
+          
+      - name: 📝 Update build.gradle for signing
+        run: |
+          cat >> android/app/build.gradle << 'EOF'
+          
+          android {
+              signingConfigs {
+                  release {
+                      if (project.hasProperty('MYAPP_UPLOAD_STORE_FILE')) {
+                          storeFile file(MYAPP_UPLOAD_STORE_FILE)
+                          storePassword MYAPP_UPLOAD_STORE_PASSWORD
+                          keyAlias MYAPP_UPLOAD_KEY_ALIAS
+                          keyPassword MYAPP_UPLOAD_KEY_PASSWORD
+                      }
+                  }
+              }
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.release
+                  }
+              }
+          }
+          EOF
+          
+      - name: 🔨 Build AAB
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew bundleRelease --no-daemon --stacktrace
+          
+      - name: 📤 Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: MeditationApp/android/app/build/outputs/bundle/release/app-release.aab
+          retention-days: 30
+          
+      - name: ✅ Build Summary
+        run: |
+          echo "### 🎉 Build Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: ${{ github.event.inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Number**: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          ls -lh android/app/build/outputs/bundle/release/ >> $GITHUB_STEP_SUMMARY
